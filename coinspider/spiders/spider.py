@@ -68,71 +68,102 @@ class CoinSpider(scrapy.Spider):
         for url in urls:
             yield scrapy.Request(url=url, callback=self.parse)
 
-    def create_table_if_not_exists(self, table):
+    def create_table_if_not_exists(self, table, key_fields = []):
         """
         CREATE TABLE for specific cryptocurrency. 
         e.g btc, bch, ltc 
         *Important* Coin Name IS Table Name
         """
-        query = 'CREATE TABLE IF NOT EXISTS ' + table + '(' +   \
-                    "date DATE," +                              \
-                    "txVolume DECIMAL," +                       \
-                    "txCount DECIMAL," +                        \
-                    "marketcap DECIMAL," +                      \
-                    "price DECIMAL," +                          \
-                    "exchangeVolume DECIMAL," +                 \
-                    "generatedCoins DECIMAL," +                 \
-                    "fees DECIMAL" +                            \
-                ");"
+        fields = ""
+        for idx in range(len(key_fields)):
+            type_str = "DECIMAL"
+            if(idx == 0):
+                type_str = "DATE"
+            fields = fields + key_fields[idx] + " " + type_str
+            if(idx != len(key_fields) - 1):
+                fields = fields + ","
+
+        query = 'CREATE TABLE IF NOT EXISTS ' + table + '(' + fields + ");"
         self.cursor.execute(query)
         self.conn.commit()
         pprint.pprint(query)
 
-    def compare_diff_push(self, table, records):
+    def compare_diff_push(self, table, records, key_fields):
         """
         Compare Diff on specific table and fetched data. 
         Grab the last point (probably yesterday) and insert new records from the point.
         Will be executed and push data on daily basis.
         """
-        query = 'SELECT * FROM '+ table + ' ORDER BY date LIMIT 1'
+        query = 'SELECT * FROM '+ table + ' ORDER BY date DESC LIMIT 1'
         self.cursor.execute(query)
         last_record = self.cursor.fetchone()
         idx = 0
         if last_record:
             for row in records:
-                if row[0] == last_record['date']:
-                    break
                 idx = idx + 1
+                if row[key_fields[0]] == last_record[0].strftime("%Y-%m-%d"):
+                    break
 
         pprint.pprint(idx)
 
-        for row in records[idx:]:
-            query = "INSERT INTO {table} (date, txVolume, txCount, marketcap, price, exchangeVolume, generatedCoins, fees) VALUES ('{date}', {txVolume}, {txCount}, {marketcap}, {price}, {exchangeVolume}, {generatedCoins}, {fees})"
-            formatter = string.Formatter()
-            mapping = FormatDict(table = table,
-                date= row[0],
-                txVolume= row[1],
-                txCount= row[2],
-                marketcap= row[3],
-                price= row[4],
-                exchangeVolume= row[5],
-                generatedCoins= row[6],
-                fees= row[7])
-            query = formatter.vformat(query, (), mapping)
+        if idx != len(records):
+            for row in records[idx:]:
+                query = "INSERT INTO " + table + " ("
+                for idx in range(len(key_fields)):
+                    query = query + key_fields[idx]
+                    if(idx != len(key_fields) - 1):
+                        query = query + ","
+                query = query + ") VALUES ("
+                for idx in range(len(key_fields)):
+                    if(idx == 0):
+                        query = query + "'"+row[key_fields[idx]]+"'"
+                    else:
+                        query = query + row[key_fields[idx]]
+                    if(idx != len(key_fields) - 1):
+                        query = query + ", "
+                query = query + ");"
 
-            pprint.pprint(query)
 
-            self.cursor.execute(query)
-            self.conn.commit();
+                # query = "INSERT INTO {table} (date, txVolume, txCount, marketcap, price, exchangeVolume, generatedCoins, fees) VALUES ('{date}', {txVolume}, {txCount}, {marketcap}, {price}, {exchangeVolume}, {generatedCoins}, {fees})"
+                # formatter = string.Formatter()
+                # mapping = FormatDict(table = table,
+                #     date= row[0],
+                #     txVolume= row[1],
+                #     txCount= row[2],
+                #     marketcap= row[3],
+                #     price= row[4],
+                #     exchangeVolume= row[5],
+                #     generatedCoins= row[6],
+                #     fees= row[7])
+                # query = formatter.vformat(query, (), mapping)
 
+                pprint.pprint(query)
+
+                self.cursor.execute(query)
+                self.conn.commit();
+        else:
+            pprint.pprint("Table "+table+" is up to date")
 
     def parse(self, response):
         page = response.url.split("/")[-1].split(".")[0]  # page = coin name
         data = response.body # csv body
-        result = [row for row in csv.reader(data.splitlines(), delimiter=',')][1:] # fetch data part of csv
+        result = [row for row in csv.reader(data.splitlines(), delimiter=',')] # fetch data part of csv
 
-        self.create_table_if_not_exists(page)
+        records = []
 
-        self.compare_diff_push(page, result)
+        key_fields = []
+        for row in result[0]:
+            key_fields.append(row.strip().split('(')[0])
+
+        for row in result[1:]:
+            item = {}
+            idx = 0
+            for idx in range(len(key_fields)):
+                item[key_fields[idx]] = row[idx]
+            records.append(item)
+
+        self.create_table_if_not_exists(page, key_fields)
+
+        self.compare_diff_push(page, records, key_fields)
 
         pprint.pprint(page)
